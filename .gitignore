@@ -1,0 +1,4 @@
+node_modules/
+dist/
+# The account keys: never in any repository.
+.env
