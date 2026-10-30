@@ -20,7 +20,7 @@ export interface Context {
 
 const SPLITTABLE = new Set(["pending", "awaiting_payment", "on_hold"]);
 /** `PUT /v2/shipments/{id}`'s read-only fields (the spec's `partial_shipment`). */
-const READ_ONLY = ["shipment_id", "created_at", "modified_at", "shipment_status", "tags", "total_weight", "batch_ids"];
+export const READ_ONLY = ["shipment_id", "created_at", "modified_at", "shipment_status", "tags", "total_weight", "batch_ids"];
 
 /** A fulfillment that still stands: not voided. (ShipStation lists it without a tracking number for a few seconds first.) */
 export const liveFulfillment = (f: Record<string, unknown>) => !f.voided && !f.voided_at;

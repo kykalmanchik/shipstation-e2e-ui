@@ -6,7 +6,8 @@ import { api, describeError } from "../lib/api.ts";
 import { orderOf } from "../lib/format.ts";
 import { useCarrierList, useCarriers, type CarrierPackage, type CarrierService } from "../lib/hooks.ts";
 import {
-  LABEL_FORMATS, LABEL_LAYOUTS, STAMPS_WARNING, buyFromRateStep, buyOwnStep, buyable, isStamps, purchasable, rateRequest, rateText, ratesOf,
+  DIMENSION_UNITS, LABEL_FORMATS, LABEL_LAYOUTS, STAMPS_WARNING, WEIGHT_UNITS, buyFromRateStep, buyOwnStep, buyable, isStamps, noSize, packageChanged, packageError, packageOf,
+  purchasable, rateRequest, rateText, ratesOf, updatePackageStep, type PackageEdit,
   type LabelFile, type Rate, type Step,
 } from "../lib/moves.ts";
 import type { Operation } from "../lib/types.ts";
@@ -26,6 +27,7 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
   const [serviceCode, setServiceCode] = useState("");
   const [packageCode, setPackageCode] = useState("");
   const [file, setFile] = useState<LabelFile>({ label_format: "pdf", label_layout: "4x6" });
+  const [pkg, setPkg] = useState<PackageEdit | null>(null);
   const [rates, setRates] = useState<Rate[] | null>(null);
   const [rateId, setRateId] = useState("");
   const services = useCarrierList<CarrierService>("services", carrierId);
@@ -45,7 +47,10 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
   const ownCarrier = carriers.data?.find((c) => c.carrier_id === s.carrier_id);
   const stamps = how === "own" ? isStamps(ownCarrier?.carrier_code) : isStamps(chosen?.carrier_code);
   const steps = how === "own" ? [...prelude, buyOwnStep(s.shipment_id, file)] : rateId ? [...prelude, buyFromRateStep(rateId, file)] : [];
-  const weight = s.packages?.[0]?.weight;
+  const edit = pkg ?? packageOf(s);
+  const setEdit = (patch: Partial<PackageEdit>) => { setPkg({ ...edit, ...patch }); forget(); };
+  const editProblem = packageChanged(s, edit) ? packageError(edit) : null;
+  const save = packageChanged(s, edit) ? [...prelude, updatePackageStep(s, edit)] : [];
 
   return (
     <div className="stack" style={{ gap: 10 }}>
@@ -101,7 +106,6 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
               </select>
             </div>
           </div>
-          <div className="t-xs muted">Weight and size come from the shipment{weight ? `: ${weight.value} ${weight.unit}` : " (it has none — ShipStation will say so)"}.</div>
           <div className="row" style={{ flexWrap: "wrap" }}>
             <button type="button" className="btn btn-outline" disabled={quote.isPending || carrierIds.length === 0} onClick={() => quote.mutate()}>
               {quote.isPending ? <Loader size={14} className="spin" /> : null} Get rates</button>
@@ -125,10 +129,43 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
         </>
       )}
 
+      <div className="stack" style={{ gap: 8 }}>
+        <div className="semibold t-sm">Package</div>
+        {noSize(s) && <div className="callout tone-yellow accent-left row"><TriangleAlert size={16} /><div>The shipment has no package size (length, width, height): carriers refuse to sell a label without one. Set it below and save.</div></div>}
+        <div className="grid">
+          {(["length", "width", "height"] as const).map((k) => (
+            <div className="field" key={k}>
+              <label htmlFor={`pkg-${k}`}>{k[0]!.toUpperCase() + k.slice(1)}</label>
+              <input id={`pkg-${k}`} className="input" inputMode="decimal" value={edit[k]} onChange={(e) => setEdit({ [k]: e.target.value })} autoComplete="off" />
+            </div>
+          ))}
+          <div className="field">
+            <label htmlFor="pkg-dim-unit">Size unit</label>
+            <select id="pkg-dim-unit" className="select" value={edit.dimUnit} onChange={(e) => setEdit({ dimUnit: e.target.value })}>
+              {DIMENSION_UNITS.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="pkg-weight">Weight</label>
+            <input id="pkg-weight" className="input" inputMode="decimal" value={edit.weight} onChange={(e) => setEdit({ weight: e.target.value })} autoComplete="off" />
+          </div>
+          <div className="field">
+            <label htmlFor="pkg-weight-unit">Weight unit</label>
+            <select id="pkg-weight-unit" className="select" value={edit.weightUnit} onChange={(e) => setEdit({ weightUnit: e.target.value })}>
+              {WEIGHT_UNITS.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+        </div>
+        {save.length > 0 && (
+          <PlanRunner key={JSON.stringify(edit)} title="Save package" steps={save} kind="write" shipmentId={s.shipment_id} order={orderOf(s)} operations={operations} production={production}
+            blocked={editProblem} runLabel="Save package" onReport={(r) => { if (r.ok) setPkg(null); onReport(r); }} />
+        )}
+      </div>
+
       {stamps && <div className="callout tone-yellow accent-left row"><TriangleAlert size={16} /><div>{STAMPS_WARNING}</div></div>}
 
       <PlanRunner title="Buy label" steps={steps} kind="spend" shipmentId={s.shipment_id} order={orderOf(s)} operations={operations} production={production}
-        blocked={how === "rate" && !rateId ? "Get the rates and choose one first." : null} runLabel="Buy label" onReport={onReport} />
+        blocked={packageChanged(s, edit) ? "Save the package first — the label is bought with the package ShipStation holds." : how === "rate" && !rateId ? "Get the rates and choose one first." : null} runLabel="Buy label" onReport={onReport} />
     </div>
   );
 }

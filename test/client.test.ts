@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { draft, unavailable, type Context } from "../src/lib/actions.ts";
 import type { Label, Operation, Shipment } from "../src/lib/types.ts";
-import { VOID_RISK, defaultCarrierCode, defaultTracking, executePlan, holdDateError, moves, plan, rateRequest, refusalOf, shipError, stageOf, tomorrow, buyable, type Step } from "../src/lib/moves.ts";
+import { VOID_RISK, noSize, packageChanged, packageError, packageOf, updatePackageStep, defaultCarrierCode, defaultTracking, executePlan, holdDateError, moves, plan, rateRequest, refusalOf, shipError, stageOf, tomorrow, buyable, type Step } from "../src/lib/moves.ts";
 import { parseView, serializeView } from "../src/lib/url-state.ts";
 // @ts-expect-error — a plain .mjs module without types
 import { OPERATIONS_BY_ID } from "../server/operations.mjs";
@@ -213,4 +213,19 @@ test("a plan that voids a USPS label with no tracking number warns first; a trac
   assert.equal(warn(ctx({ shipment_status: "label_purchased" }, [label()]), "cancelled"), null);
   assert.equal(warn(ctx(), "cancelled"), null); // nothing to void
   assert.match(refusalOf("label.void", { operation: "", method: "", path: "", query: {}, data: { approved: false, reason_code: "validation_failed", message: "x" } }) ?? "", /no tracking number/);
+});
+
+test("the package: no size is told, an edit is validated and saved as the whole shipment with the first package replaced", () => {
+  const bare = shipment({ warehouse_id: "se-w", created_at: "x", packages: [{ package_code: "package", weight: { value: 10, unit: "ounce" }, dimensions: { length: 0, width: 0, height: 0, unit: "inch" } }] });
+  assert.ok(noSize(bare) && noSize(shipment()) && !noSize(shipment({ packages: [{ dimensions: { length: 1, width: 2, height: 3, unit: "inch" } }] })));
+  const edit = { ...packageOf(bare), length: "6", width: "4", height: "3" };
+  assert.ok(packageChanged(bare, edit) && !packageChanged(bare, packageOf(bare)));
+  assert.equal(packageError(edit), null);
+  assert.match(packageError({ ...edit, width: "0" }) ?? "", /Width/);
+  const step = updatePackageStep(bare, edit);
+  const body = step.input.body as Shipment;
+  assert.equal(step.op, "shipment.update");
+  assert.deepEqual(step.input.params, { shipment_id: "se-1" });
+  assert.deepEqual(body.packages, [{ package_code: "package", weight: { value: 10, unit: "ounce" }, dimensions: { length: 6, width: 4, height: 3, unit: "inch" } }]);
+  assert.ok(body.warehouse_id === "se-w" && !("created_at" in body) && !("shipment_id" in body));
 });

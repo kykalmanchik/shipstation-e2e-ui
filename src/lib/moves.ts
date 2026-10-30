@@ -1,7 +1,8 @@
 // The desk's own vocabulary: where a shipment stands, where it may be moved, and the ShipStation calls each move is.
 // Pure: the record in, a verdict or a plan out. A plan is a list of steps; each step is one operation of the catalogue
 // (server/operations.mjs), so the server's allowlist and the read-only guard of production apply to it unchanged.
-import { standing, type Context } from "./actions.ts";
+import { READ_ONLY as SHIPMENT_READ_ONLY, standing, type Context } from "./actions.ts";
+import type { Shipment } from "./types.ts";
 import type { OpInput, OpResult } from "./types.ts";
 
 /** The stages a shipment can be moved to: the ones this sandbox can reach. Delivered and a carrier problem come from the
@@ -179,6 +180,45 @@ export const buyable = (rates: Rate[]) => rates.filter(purchasable).sort((a, b) 
 export function rateText(r: Rate): string {
   const price = r.shipping_amount ? `${r.shipping_amount.amount.toFixed(2)} ${r.shipping_amount.currency.toUpperCase()}` : "no price";
   return `${r.carrier_friendly_name ?? r.carrier_code ?? "?"} · ${r.service_type ?? r.service_code ?? "?"} · ${price}${r.delivery_days ? ` · ${r.delivery_days} d` : ""}`;
+}
+
+/* ---------- the package: its size and weight ---------- */
+
+/** The first package's size and weight as the form holds them (text, so a half-typed number stays typed). */
+export interface PackageEdit { length: string; width: string; height: string; dimUnit: string; weight: string; weightUnit: string }
+export const DIMENSION_UNITS = ["inch", "centimeter"] as const;
+export const WEIGHT_UNITS = ["ounce", "pound", "gram", "kilogram"] as const;
+
+export function packageOf(s: Shipment): PackageEdit {
+  const p = s.packages?.[0];
+  const n = (v: number | undefined) => (v === undefined ? "" : String(v));
+  return {
+    length: n(p?.dimensions?.length), width: n(p?.dimensions?.width), height: n(p?.dimensions?.height), dimUnit: p?.dimensions?.unit ?? "inch",
+    weight: n(p?.weight?.value), weightUnit: p?.weight?.unit ?? "ounce",
+  };
+}
+
+/** ShipStation's carriers refuse a package with no size ("Dimensions are required in order to use the service specified"):
+ * a size of zero is the same as none. */
+export const noSize = (s: Shipment): boolean => {
+  const d = s.packages?.[0]?.dimensions;
+  return !d || !(d.length > 0 && d.width > 0 && d.height > 0);
+};
+
+export function packageError(e: PackageEdit): string | null {
+  for (const [name, v] of [["Length", e.length], ["Width", e.width], ["Height", e.height], ["Weight", e.weight]] as const) {
+    if (!(Number(v) > 0)) return `${name} must be a number above 0`;
+  }
+  return null;
+}
+export const packageChanged = (s: Shipment, e: PackageEdit): boolean => JSON.stringify(packageOf(s)) !== JSON.stringify(e);
+
+/** `PUT /v2/shipments/{id}` with the whole shipment and its first package replaced (measured: the update is not partial). */
+export function updatePackageStep(s: Shipment, e: PackageEdit): Step {
+  const [first, ...rest] = s.packages ?? [];
+  const edited = { ...first, weight: { value: Number(e.weight), unit: e.weightUnit }, dimensions: { length: Number(e.length), width: Number(e.width), height: Number(e.height), unit: e.dimUnit } };
+  const body = { ...Object.fromEntries(Object.entries(s).filter(([key]) => !SHIPMENT_READ_ONLY.includes(key))), packages: [edited, ...rest] };
+  return { op: "shipment.update", title: `Set the package to ${e.length}×${e.width}×${e.height} ${e.dimUnit}, ${e.weight} ${e.weightUnit}`, input: { params: { shipment_id: s.shipment_id }, query: {}, body } };
 }
 
 /** A USPS label from this sandbox has no tracking number, and the sandbox has refused to void one; a void of a
