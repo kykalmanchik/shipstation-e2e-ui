@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { draft, unavailable, type Context } from "../src/lib/actions.ts";
 import type { Label, Operation, Shipment } from "../src/lib/types.ts";
-import { VOID_RISK, noSize, packageChanged, packageError, packageOf, updatePackageStep, defaultCarrierCode, defaultTracking, executePlan, holdDateError, moves, plan, rateRequest, refusalOf, shipError, stageOf, tomorrow, buyable, type Step } from "../src/lib/moves.ts";
+import { DHL_IMP_WARNING, carrierSetupHint, isDhlExpress, VOID_RISK, noSize, packageChanged, packageError, packageOf, updatePackageStep, defaultCarrierCode, defaultTracking, executePlan, holdDateError, moves, plan, rateRequest, refusalOf, shipError, stageOf, tomorrow, buyable, type Step } from "../src/lib/moves.ts";
 import { parseView, serializeView } from "../src/lib/url-state.ts";
 // @ts-expect-error — a plain .mjs module without types
 import { OPERATIONS_BY_ID } from "../server/operations.mjs";
@@ -228,4 +228,12 @@ test("the package: no size is told, an edit is validated and saved as the whole 
   assert.deepEqual(step.input.params, { shipment_id: "se-1" });
   assert.deepEqual(body.packages, [{ package_code: "package", weight: { value: 10, unit: "ounce" }, dimensions: { length: 6, width: 4, height: 3, unit: "inch" } }]);
   assert.ok(body.warehouse_id === "se-w" && !("created_at" in body) && !("shipment_id" in body));
+});
+
+test("DHL's 8009 (account not IMP enabled) is explained, an ordinary refusal is not", () => {
+  const dhl = "ShipStation 400: A shipping carrier error occurred: Error received from the DHL Express MyDHL API: [CreateLabel] 8009: The Shipper Account is invalid. Account is not IMP enabled and cannot be used as Freight Payer account";
+  assert.equal(carrierSetupHint(dhl), DHL_IMP_WARNING);
+  assert.equal(carrierSetupHint("validation_failed: weight is required"), null);
+  assert.ok(isDhlExpress("dhl_express_mydhl_domestic_express"));
+  assert.ok(!isDhlExpress("ups_ground") && !isDhlExpress(null));
 });

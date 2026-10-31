@@ -226,6 +226,13 @@ export function updatePackageStep(s: Shipment, e: PackageEdit): Step {
 export const STAMPS_WARNING = "A USPS (stamps_com) sandbox label has no tracking number, and the sandbox has refused to void one before — use UPS when the test needs a void, a cancel or tracking.";
 export const isStamps = (carrierCode?: string | null) => carrierCode === "stamps_com";
 
+/** DHL Express (MyDHL) refuses a label with 8009 "Account is not IMP enabled" when the DHL account connected in ShipStation cannot be the
+ * shipment's Freight Payer — a setting of that account, not of the shipment or of this tool; buying again changes nothing. */
+export const DHL_IMP_WARNING = "DHL Express: the DHL account connected in ShipStation is not IMP enabled (DHL error 8009), so a label cannot be bought with it — here or in ShipStation itself. Enable IMP / a Freight Payer account on the DHL account, or buy with another carrier (\"A rate I choose\") when the test does not need DHL.";
+export const isDhlExpress = (code?: string | null) => Boolean(code && code.startsWith("dhl_express"));
+/** The explanation for a carrier answer that no retry fixes, or `null`. */
+export const carrierSetupHint = (message: string): string | null => (/\b8009\b|not IMP enabled/i.test(message) ? DHL_IMP_WARNING : null);
+
 /* ---------- running a plan ---------- */
 
 export interface StepState { status: "pending" | "running" | "done" | "failed" | "skipped"; message?: string }

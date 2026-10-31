@@ -1,5 +1,6 @@
 // The page's only door to its server. Every answer refreshes the rate meter from the server's headers; every failure is
 // an ApiError that says who refused (ShipStation or this tool) and whether a write's outcome is unknown.
+import { carrierSetupHint } from "./moves.ts";
 import type { Meta, OpInput, OpResult, ShipmentPage, ShipmentRecord } from "./types.ts";
 
 export class ApiError extends Error {
@@ -80,6 +81,8 @@ export function describeError(error: unknown): string {
   const parts = [`${head}: ${error.message}`];
   if (error.status === 429) parts.push(`the sandbox allows 20 calls a minute — try again in ${Math.ceil((error.retryAfterMs ?? 60_000) / 1000)} s`);
   if (error.requestId) parts.push(`request_id ${error.requestId}`);
+  const hint = carrierSetupHint(error.message);
+  if (hint) parts.push(hint);
   return parts.join(" · ");
 }
 

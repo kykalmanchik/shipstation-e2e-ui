@@ -6,7 +6,7 @@ import { api, describeError } from "../lib/api.ts";
 import { orderOf } from "../lib/format.ts";
 import { useCarrierList, useCarriers, type CarrierPackage, type CarrierService } from "../lib/hooks.ts";
 import {
-  DIMENSION_UNITS, LABEL_FORMATS, LABEL_LAYOUTS, STAMPS_WARNING, WEIGHT_UNITS, buyFromRateStep, buyOwnStep, buyable, isStamps, noSize, packageChanged, packageError, packageOf,
+  DHL_IMP_WARNING, DIMENSION_UNITS, LABEL_FORMATS, isDhlExpress, LABEL_LAYOUTS, STAMPS_WARNING, WEIGHT_UNITS, buyFromRateStep, buyOwnStep, buyable, isStamps, noSize, packageChanged, packageError, packageOf,
   purchasable, rateRequest, rateText, ratesOf, updatePackageStep, type PackageEdit,
   type LabelFile, type Rate, type Step,
 } from "../lib/moves.ts";
@@ -45,6 +45,7 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
   const list = rates ? buyable(rates) : [];
   const chosen = list.find((r) => r.rate_id === rateId);
   const ownCarrier = carriers.data?.find((c) => c.carrier_id === s.carrier_id);
+  const dhl = how === "own" ? isDhlExpress(ownCarrier?.carrier_code ?? s.service_code) : isDhlExpress(chosen?.carrier_code);
   const stamps = how === "own" ? isStamps(ownCarrier?.carrier_code) : isStamps(chosen?.carrier_code);
   const steps = how === "own" ? [...prelude, buyOwnStep(s.shipment_id, file)] : rateId ? [...prelude, buyFromRateStep(rateId, file)] : [];
   const edit = pkg ?? packageOf(s);
@@ -162,6 +163,7 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
         )}
       </div>
 
+      {dhl && <div className="callout tone-yellow accent-left row"><TriangleAlert size={16} /><div>{DHL_IMP_WARNING}</div></div>}
       {stamps && <div className="callout tone-yellow accent-left row"><TriangleAlert size={16} /><div>{STAMPS_WARNING}</div></div>}
 
       <PlanRunner title="Buy label" steps={steps} kind="spend" shipmentId={s.shipment_id} order={orderOf(s)} operations={operations} production={production}
