@@ -118,6 +118,8 @@ export const OPERATIONS = [
     notes: ["Up to 500 ids. 207 when some were held: the rest are in errors."] },
   { id: "shipments.restoreMany", scope: "account", group: "Shipments", kind: "write", method: "POST", path: "/shipments/restore", title: "Restore many shipments", body: { shipment_ids: { type: "array" } },
     notes: ["Up to 500 ids. 207 when some were restored."] },
+  { id: "webhooks.list", scope: "account", group: "Webhooks", kind: "read", method: "GET", path: "/environment/webhooks", title: "List webhooks",
+    notes: ["Every webhook registered on the account: webhook_id, url, event, is_active, name, store_id. Header values come back masked (*****).", "Measured 2026-11-02 on the sandbox: answers a plain array, no paging."] },
   { id: "tags.list", scope: "account", group: "Tags", kind: "read", method: "GET", path: "/tags", title: "List tags" },
   { id: "tags.create", scope: "account", group: "Tags", kind: "write", method: "POST", path: "/tags", title: "Create a tag", body: { name: {}, color: {} } },
   { id: "tracking.get", scope: "account", group: "Tracking", kind: "read", method: "GET", path: "/tracking", title: "Tracking by number", query: [{ name: "carrier_code" }, { name: "tracking_number" }, { name: "carrier_id" }],
