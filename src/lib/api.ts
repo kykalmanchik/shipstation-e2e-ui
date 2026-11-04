@@ -6,6 +6,8 @@ import type { Meta, OpInput, OpResult, ShipmentPage, ShipmentRecord } from "./ty
 export class ApiError extends Error {
   status: number;
   from: "shipstation" | "shipstation-e2e-ui" | "network";
+  /** This tool's own reason, when it names one (`access_code_required`, `access_code_wrong`, `access_code_wait`). */
+  code: string | null;
   requestId: string | null;
   errors: Array<{ code: string | null; message: string | null; field: string | null }>;
   outcome: string | null;
@@ -15,6 +17,7 @@ export class ApiError extends Error {
     super(typeof e.message === "string" && e.message ? e.message : fallback);
     this.status = status;
     this.from = e.from === "shipstation" ? "shipstation" : status === 0 ? "network" : "shipstation-e2e-ui";
+    this.code = typeof e.code === "string" ? e.code : null;
     this.requestId = typeof e.requestId === "string" ? e.requestId : null;
     this.errors = Array.isArray(e.errors) ? (e.errors as ApiError["errors"]) : [];
     this.outcome = typeof e.outcome === "string" ? e.outcome : null;
@@ -41,6 +44,17 @@ function checkEnvironment(response: Response) {
   else if (environment !== pageEnvironment) window.location.reload();
 }
 
+/* ---------- the access code ---------- */
+
+/** Set when the server asks for the access code (no session, or it expired): the page shows the sign-in instead. */
+let signedOut = false;
+const accessListeners = new Set<() => void>();
+export const accessStore = {
+  get: () => signedOut,
+  subscribe(listener: () => void) { accessListeners.add(listener); return () => { accessListeners.delete(listener); }; },
+  set(value: boolean) { if (signedOut === value) return; signedOut = value; for (const listener of accessListeners) listener(); },
+};
+
 function readMeter(response: Response) {
   checkEnvironment(response);
   const calls = response.headers.get("x-ss-calls");
@@ -63,7 +77,11 @@ async function request<T>(method: "GET" | "POST", path: string, body?: unknown, 
   }
   readMeter(response);
   const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-  if (!response.ok) throw new ApiError(response.status, data, `HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new ApiError(response.status, data, `HTTP ${response.status}`);
+    if (error.code === "access_code_required") accessStore.set(true);
+    throw error;
+  }
   return data as T;
 }
 
@@ -72,6 +90,8 @@ export const api = {
   shipments: (query: Record<string, string>, signal?: AbortSignal) => request<ShipmentPage>("GET", `/api/shipments?${new URLSearchParams(query)}`, undefined, signal),
   record: (shipmentId: string, signal?: AbortSignal) => request<ShipmentRecord>("GET", `/api/shipments/${encodeURIComponent(shipmentId)}/record`, undefined, signal),
   run: (operationId: string, input: OpInput) => request<OpResult>("POST", `/api/op/${operationId}`, input),
+  signIn: (code: string) => request<{ signedIn: boolean }>("POST", "/api/session", { code }),
+  signOut: () => request<{ signedIn: boolean }>("POST", "/api/session/sign-out", {}),
 };
 
 /** A short line for a toast or an error box. */

@@ -5,6 +5,7 @@ import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { SESSION_COOKIE, createAccess, loadDeploy } from "../server/access.mjs";
 import { createApi, createHandler, pathFor, queryFor } from "../server/handler.mjs";
 import { OPERATIONS, OPERATIONS_BY_ID } from "../server/operations.mjs";
 import { InputError, UnreachableError, VendorError, createLimiter, createShipStation, loadConfig, retryAfterMs } from "../server/shipstation.mjs";
@@ -159,12 +160,12 @@ test("a search asks by order number and by external id and merges both, newest f
   assert.ok(calls.every((c) => new URL(c.url).searchParams.get("shipment_status") === "on_hold"), "the other filters still apply");
 });
 
-async function withServer(run) {
+async function withServer(run, options = {}) {
   const { fetch, calls } = fakeFetch(() => ({ shipments: [], page: 1, pages: 1, total: 0 }));
   const server = createServer();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
-  server.on("request", createHandler({ ss: createShipStation({ apiKey: KEY, fetch, ...clock() }), port }));
+  server.on("request", createHandler({ ss: createShipStation({ apiKey: KEY, fetch, ...clock() }), port, ...options }));
   try { await run({ base: `http://127.0.0.1:${port}`, port, calls }); } finally { server.close(); }
 }
 
@@ -196,5 +197,80 @@ test("the router: its own host, writes from its own page as JSON, no route outsi
       req.on("error", reject); req.end();
     });
     assert.equal(status, 421, "DNS rebinding: another Host is refused");
+  });
+});
+
+test("the deploy settings: loopback and open by default; a host beyond this machine needs the access code", () => {
+  assert.deepEqual(loadDeploy({ env: {} }), { host: "127.0.0.1", accessCode: null, publicOrigin: null });
+  assert.deepEqual(loadDeploy({ env: { ACCESS_CODE: " shell-code " }, file: { ACCESS_CODE: "file-code" } }).accessCode, "shell-code");
+  assert.equal(loadDeploy({ env: {}, file: { ACCESS_CODE: "file-code" } }).accessCode, "file-code");
+  assert.deepEqual(loadDeploy({ env: { HOST: "0.0.0.0", ACCESS_CODE: "c", PUBLIC_ORIGIN: "https://desk.example.test/" } }),
+    { host: "0.0.0.0", accessCode: "c", publicOrigin: "https://desk.example.test" });
+  assert.throws(() => loadDeploy({ env: { HOST: "0.0.0.0" } }), /ACCESS_CODE/);
+  assert.throws(() => loadDeploy({ env: { PUBLIC_ORIGIN: "https://desk.example.test" } }), /ACCESS_CODE/);
+  assert.doesNotThrow(() => loadDeploy({ env: { PUBLIC_ORIGIN: "http://localhost:8080" } }));
+  for (const bad of ["desk.example.test", "https://desk.example.test/path", "ftp://desk.example.test"]) {
+    assert.throws(() => loadDeploy({ env: { ACCESS_CODE: "c", PUBLIC_ORIGIN: bad } }), /PUBLIC_ORIGIN/, bad);
+  }
+});
+
+test("the access code: compared whole, wrong codes capped, the session cookie signed and expiring", () => {
+  let t = 1_000_000;
+  const access = createAccess({ code: "open-sesame", now: () => t });
+  assert.equal(access.check("open-sesame"), "ok");
+  assert.equal(access.check("open-sesam"), "wrong");
+  assert.equal(access.check(undefined), "wrong");
+  for (let i = 0; i < 8; i++) access.check("nope");
+  assert.equal(access.check("open-sesame"), "wait", "ten wrong codes in a minute: even the right one waits");
+  t += 61_000;
+  assert.equal(access.check("open-sesame"), "ok");
+
+  const cookie = access.cookie();
+  assert.match(cookie, new RegExp(`^${SESSION_COOKIE}=\\d+\\.[\\w-]+; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200$`));
+  const value = cookie.split(";")[0];
+  assert.ok(access.signedIn(`other=1; ${value}`));
+  assert.ok(!access.signedIn(value.replace(/.$/, (c) => (c === "A" ? "B" : "A"))), "tampered");
+  assert.ok(!createAccess({ code: "another-code", now: () => t }).signedIn(value), "the code changed: every session ends");
+  assert.ok(!access.signedIn(undefined) && !access.signedIn("ss_desk_session=garbage"));
+  t += 12 * 3_600_000 + 1;
+  assert.ok(!access.signedIn(value), "expired after 12 h");
+  assert.match(createAccess({ code: "c", secure: true }).cookie(), /; Secure$/);
+  assert.match(access.clear(), /Max-Age=0/);
+});
+
+test("the router behind the access code: only the sign-in is open, the cookie opens the rest; a public origin is its own host", async () => {
+  const publicOrigin = "https://desk.example.test";
+  await withServer(async ({ base, port }) => {
+    const origin = `http://127.0.0.1:${port}`;
+    const json = { "content-type": "application/json", origin };
+    const meta = await fetch(`${base}/api/meta`);
+    assert.equal(meta.status, 401);
+    assert.equal((await meta.json()).error.code, "access_code_required");
+    assert.deepEqual(await (await fetch(`${base}/api/session`)).json(), { required: true, signedIn: false });
+
+    const wrong = await fetch(`${base}/api/session`, { method: "POST", headers: json, body: JSON.stringify({ code: "nope" }) });
+    assert.equal(wrong.status, 401);
+    assert.equal(wrong.headers.get("set-cookie"), null);
+    assert.equal((await fetch(`${base}/api/session`, { method: "POST", headers: { ...json, origin: "http://evil.test" }, body: JSON.stringify({ code: "open-sesame" }) })).status, 403);
+
+    const ok = await fetch(`${base}/api/session`, { method: "POST", headers: json, body: JSON.stringify({ code: "open-sesame" }) });
+    assert.equal(ok.status, 200);
+    const cookie = ok.headers.get("set-cookie").split(";")[0];
+    assert.equal((await fetch(`${base}/api/meta`, { headers: { cookie } })).status, 200);
+    assert.equal((await (await fetch(`${base}/api/meta`, { headers: { cookie } })).json()).access.required, true);
+    assert.deepEqual(await (await fetch(`${base}/api/session`, { headers: { cookie } })).json(), { required: true, signedIn: true });
+    assert.match((await fetch(`${base}/api/session/sign-out`, { method: "POST", headers: { ...json, cookie }, body: "{}" })).headers.get("set-cookie"), /Max-Age=0/);
+
+    const status = (host, extra = {}) => new Promise((resolve, reject) => {
+      const req = httpRequest({ host: "127.0.0.1", port, path: "/api/session", headers: { host, ...extra } }, (res) => { res.resume(); resolve(res.statusCode); });
+      req.on("error", reject); req.end();
+    });
+    assert.equal(await status("desk.example.test"), 200, "the public origin's host is this server's");
+    assert.equal(await status("other.example.test"), 421);
+  }, { access: createAccess({ code: "open-sesame" }), publicOrigin });
+
+  await withServer(async ({ base }) => {
+    assert.deepEqual(await (await fetch(`${base}/api/session`)).json(), { required: false, signedIn: true });
+    assert.equal((await (await fetch(`${base}/api/meta`)).json()).access.required, false);
   });
 });

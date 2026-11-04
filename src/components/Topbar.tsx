@@ -1,11 +1,13 @@
 import { useSyncExternalStore } from "react";
-import { Moon, Sun } from "lucide-react";
-import { meterStore } from "../lib/api.ts";
+import { useQueryClient } from "@tanstack/react-query";
+import { LogOut, Moon, Sun } from "lucide-react";
+import { accessStore, api, meterStore } from "../lib/api.ts";
 import { useTheme } from "../lib/hooks.ts";
 import type { Account } from "../lib/types.ts";
 import { navigate, type View } from "../lib/url-state.ts";
 
-export function Topbar({ view, account }: { view: View; account?: Account }) {
+export function Topbar({ view, account, accessRequired = false }: { view: View; account?: Account; accessRequired?: boolean }) {
+  const qc = useQueryClient();
   const production = account?.environment === "production";
   const meter = useSyncExternalStore(meterStore.subscribe, meterStore.get, meterStore.get);
   const { theme, toggle } = useTheme();
@@ -39,6 +41,13 @@ export function Topbar({ view, account }: { view: View; account?: Account }) {
       <button className="btn btn-ghost btn-icon-sm" onClick={toggle} aria-label={theme === "dark" ? "Light theme" : "Dark theme"} title={theme === "dark" ? "Light theme" : "Dark theme"}>
         {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
       </button>
+      {accessRequired && (
+        // What was read stays in no cache once signed out: the shipments carry customers' names and addresses.
+        <button className="btn btn-ghost btn-icon-sm" aria-label="Sign out" title="Sign out"
+          onClick={() => { void api.signOut().catch(() => {}).finally(() => { qc.clear(); accessStore.set(true); }); }}>
+          <LogOut size={16} />
+        </button>
+      )}
     </header>
   );
 }

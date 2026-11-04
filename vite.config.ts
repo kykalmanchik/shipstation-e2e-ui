@@ -12,8 +12,8 @@ function e2eApi(): Plugin {
   return {
     name: "shipstation-e2e-ui-api",
     configureServer(server) {
-      const api = bootApi({ port: PORT }); // throws without a TEST_ key: Vite refuses to start
-      server.middlewares.use((req, res, next) => { void api(req, res, next); });
+      const { handle } = bootApi({ port: PORT }); // throws without a usable key: Vite refuses to start
+      server.middlewares.use((req, res, next) => { void handle(req, res, next); });
     },
   };
 }

@@ -108,11 +108,25 @@ function send(res, status, body, headers = {}) {
   res.end(JSON.stringify(body));
 }
 
-/** The /api/* handler. `next` (Vite's middleware chain) gets everything else; without it, a 404. */
-export function createHandler({ ss, port, account = { environment: "sandbox", writes: true, limit: 20, keySource: null } }) {
+/** The /api/* handler. `next` (Vite's middleware chain) gets everything else; without it, a 404. `access` (access.mjs) puts
+ * every route but the session's behind the access code; `publicOrigin` is the address a proxy serves the tool at. */
+export function createHandler({ ss, port, account = { environment: "sandbox", writes: true, limit: 20, keySource: null }, access = null, publicOrigin = null }) {
   const api = createApi(ss, account);
-  const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  const origins = new Set([...hosts].map((h) => `http://${h}`));
+  const local = [`127.0.0.1:${port}`, `localhost:${port}`];
+  const hosts = new Set([...local, ...(publicOrigin ? [new URL(publicOrigin).host] : [])]);
+  const origins = new Set([...local.map((h) => `http://${h}`), ...(publicOrigin ? [publicOrigin] : [])]);
+
+  /** `GET /api/session` says whether a code is asked and given; `POST` with `{ code }` signs in, `POST …/sign-out` out. */
+  async function session(req, res, pathname, signedIn) {
+    if (req.method === "GET" && pathname === "/api/session") return send(res, 200, { required: Boolean(access), signedIn });
+    if (req.method !== "POST") return send(res, 405, { error: { from: "shipstation-e2e-ui", message: "GET or POST" } });
+    if (pathname === "/api/session/sign-out") return send(res, 200, { signedIn: false }, access ? { "set-cookie": access.clear() } : {});
+    if (!access) return send(res, 200, { signedIn: true });
+    const verdict = access.check((await readJson(req))?.code);
+    if (verdict === "wait") return send(res, 429, { error: { from: "shipstation-e2e-ui", code: "access_code_wait", message: "too many wrong codes — wait a minute" } }, { "retry-after": "60" });
+    if (verdict === "wrong") return send(res, 401, { error: { from: "shipstation-e2e-ui", code: "access_code_wrong", message: "wrong access code" } });
+    return send(res, 200, { signedIn: true }, { "set-cookie": access.cookie() });
+  }
 
   return async function handle(req, res, next) {
     const url = new URL(req.url ?? "/", "http://local");
@@ -123,6 +137,13 @@ export function createHandler({ ss, port, account = { environment: "sandbox", wr
       if (!origins.has(req.headers.origin ?? "")) return send(res, 403, { error: { message: "writes are taken only from this page" } });
       if (!(req.headers["content-type"] ?? "").startsWith("application/json")) return send(res, 415, { error: { message: "send application/json" } });
     }
+    const signedIn = !access || access.signedIn(req.headers.cookie);
+    if (url.pathname === "/api/session" || url.pathname === "/api/session/sign-out") {
+      try { return await session(req, res, url.pathname, signedIn); } catch (error) {
+        return send(res, error instanceof InputError ? error.status : 500, { error: { from: "shipstation-e2e-ui", message: error?.message ?? "failed" } });
+      }
+    }
+    if (!signedIn) return send(res, 401, { error: { from: "shipstation-e2e-ui", code: "access_code_required", message: "sign in with the access code" } });
     const stats = () => {
       const s = ss.stats();
       return { "x-ss-calls": String(s.calls), "x-ss-limit": String(s.limit), "x-ss-queued": String(s.queued), "x-ss-environment": account.environment };
@@ -131,7 +152,7 @@ export function createHandler({ ss, port, account = { environment: "sandbox", wr
       let result;
       let m;
       if (req.method === "GET" && url.pathname === "/api/meta") {
-        result = { operations: OPERATIONS, shipmentListQuery: SHIPMENT_LIST_QUERY, statuses: SHIPMENT_STATUSES, account, stats: ss.stats() };
+        result = { operations: OPERATIONS, shipmentListQuery: SHIPMENT_LIST_QUERY, statuses: SHIPMENT_STATUSES, account, access: { required: Boolean(access) }, stats: ss.stats() };
       } else if (req.method === "GET" && url.pathname === "/api/shipments") {
         result = await api.listShipments(Object.fromEntries(url.searchParams));
       } else if (req.method === "GET" && (m = /^\/api\/shipments\/([^/]+)\/record$/.exec(url.pathname))) {

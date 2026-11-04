@@ -88,6 +88,8 @@ export interface Meta {
   shipmentListQuery: QuerySpec[];
   statuses: string[];
   account: Account;
+  /** Whether the server asks for the access code (ACCESS_CODE). */
+  access: { required: boolean };
 }
 
 export interface ShipmentPage { shipments: Shipment[]; page?: number; pages?: number; total?: number; searched?: string }

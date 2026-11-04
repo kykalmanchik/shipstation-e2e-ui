@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // The built app (`npm run build` → dist/) and its /api on one port, no Vite: `npm start` → http://127.0.0.1:5190.
+// `HOST=0.0.0.0` (the Docker image's) listens beyond the loopback, which needs ACCESS_CODE; `/healthz` is for the balancer.
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
@@ -11,7 +12,8 @@ const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 const CSP = "default-src 'self'; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
 let api;
-try { api = bootApi(); } catch (error) { console.error(`shipstation-e2e-ui: ${error.message}`); process.exit(1); }
+let deploy;
+try { ({ handle: api, deploy } = bootApi()); } catch (error) { console.error(`shipstation-e2e-ui: ${error.message}`); process.exit(1); }
 
 async function file(res, path, status = 200) {
   const body = await readFile(path);
@@ -21,6 +23,8 @@ async function file(res, path, status = 200) {
 }
 
 const server = createServer(async (req, res) => {
+  // A balancer's check names no host of ours and carries no session: it learns only that the process answers.
+  if (req.url === "/healthz") { res.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" }); return res.end("ok"); }
   try {
     await api(req, res, async () => {
       if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); return res.end(); }
@@ -39,4 +43,6 @@ server.on("error", (error) => {
   console.error(`shipstation-e2e-ui: ${error.code === "EADDRINUSE" ? `port ${PORT} is taken (PORT=… for another)` : error.message}`);
   process.exit(1);
 });
-server.listen(PORT, "127.0.0.1", () => console.log(`shipstation-e2e-ui: built app on http://127.0.0.1:${PORT} (TEST_ key)`));
+server.listen(PORT, deploy.host, () => console.log(`shipstation-e2e-ui: built app on http://${deploy.host}:${PORT}${deploy.publicOrigin ? `, opened at ${deploy.publicOrigin}` : ""}`));
+// A container is stopped with SIGTERM: finish the answers under way, then go (a ShipStation write is never cut mid-call).
+for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => { server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 25_000).unref(); });
