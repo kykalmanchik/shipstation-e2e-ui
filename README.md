@@ -119,7 +119,10 @@ A read-only production account can move nowhere.
 choose": pick the **carrier**, then its **service** and **package type** (both read from the carrier: one call each), **Get rates**
 (narrowed by service and package: `rate_options.service_codes` / `package_types`, docs.shipstation.com/rate-shopping), choose a
 rate from the list (cheapest first, those ShipStation cannot sell are listed apart), and the label's format and layout. Weight and size
-come from the shipment itself.
+are the shipment's own, in the **Package** fields (a size of zero reads as an empty field). An edited package is saved by the purchase
+itself — one plan, one confirmation: release a hold, save the package (`PUT /v2/shipments/{id}`, the whole shipment), buy. With "a rate
+I choose" the package is saved first (**Save package**, and the move stays chosen), because the rates are quoted for the package
+ShipStation holds.
 
 **A void the sandbox is likely to refuse is announced before the plan runs.** A USPS (`stamps_com`) label with no tracking number
 (first-class flats, measured 2026-10-28: `validation_failed`, "mail-in refund requests") is refused, while labels with a tracking

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { draft, unavailable, type Context } from "../src/lib/actions.ts";
 import type { Label, Operation, Shipment } from "../src/lib/types.ts";
-import { DHL_IMP_WARNING, cancelBlocked, carrierSetupHint, isDhlExpress, VOID_RISK, noSize, packageChanged, packageError, packageOf, updatePackageStep, defaultCarrierCode, defaultTracking, executePlan, holdDateError, moves, plan, rateRequest, refusalOf, shipError, stageOf, tomorrow, buyable, voidSteps, type Step } from "../src/lib/moves.ts";
+import { DHL_IMP_WARNING, cancelBlocked, carrierSetupHint, isDhlExpress, VOID_RISK, noSize, packageChanged, packageError, packageOf, packagePlan, purchasePlan, updatePackageStep, buyOwnStep, buyFromRateStep, defaultCarrierCode, defaultTracking, executePlan, holdDateError, moves, plan, rateRequest, refusalOf, shipError, stageOf, tomorrow, buyable, voidSteps, type Step } from "../src/lib/moves.ts";
 import { parseView, serializeView } from "../src/lib/url-state.ts";
 // @ts-expect-error — a plain .mjs module without types
 import { OPERATIONS_BY_ID } from "../server/operations.mjs";
@@ -243,6 +243,34 @@ test("the package: no size is told, an edit is validated and saved as the whole 
   assert.deepEqual(step.input.params, { shipment_id: "se-1" });
   assert.deepEqual(body.packages, [{ package_code: "package", weight: { value: 10, unit: "ounce" }, dimensions: { length: 6, width: 4, height: 3, unit: "inch" } }]);
   assert.ok(body.warehouse_id === "se-w" && !("created_at" in body) && !("shipment_id" in body));
+});
+
+test("a size of zero reads as an empty field, so the first digit typed is the size", () => {
+  const bare = shipment({ packages: [{ weight: { value: 0, unit: "ounce" }, dimensions: { length: 0, width: 0, height: 0, unit: "inch" } }] });
+  assert.deepEqual(packageOf(bare), { length: "", width: "", height: "", dimUnit: "inch", weight: "", weightUnit: "ounce" });
+  assert.equal(packageOf(shipment({ packages: [{ weight: { value: 10, unit: "ounce" } }] })).weight, "10");
+});
+
+test("a label purchase is one plan: release a hold, save an edited package, buy — one confirmation for all of it", () => {
+  const packages = [{ weight: { value: 10, unit: "ounce" }, dimensions: { length: 0, width: 0, height: 0, unit: "inch" } }];
+  const held = shipment({ shipment_status: "on_hold", hold_until_date: "2026-11-24T00:00:00Z", packages });
+  const file = { label_format: "pdf", label_layout: "4x6" };
+  const edit = { ...packageOf(held), length: "8", width: "6", height: "4" };
+  const buy = buyOwnStep("se-1", file);
+  const steps = purchasePlan(held, plan("label_purchased", ctx(held)), edit, buy);
+  assert.deepEqual(steps.map((x) => x.op), ["shipment.restore", "shipment.update", "label.buyForShipment"]);
+  // The PUT replaces the whole shipment: once the hold is released it must not carry the date it was held until.
+  assert.equal((steps[1]!.input.body as Shipment).hold_until_date, null);
+  const pending = shipment({ packages, hold_until_date: null });
+  assert.deepEqual(purchasePlan(pending, [], edit, buyFromRateStep("se-r", file)).map((x) => x.op), ["shipment.update", "label.buyFromRate"]);
+  assert.deepEqual(purchasePlan(pending, [], packageOf(pending), buy).map((x) => x.op), ["label.buyForShipment"]); // nothing edited, nothing saved
+  assert.deepEqual(purchasePlan(pending, [], edit, null), []); // no rate chosen yet
+  // "A rate I choose" saves the package alone first: rates are quoted for the package ShipStation holds.
+  assert.deepEqual(packagePlan(held, plan("label_purchased", ctx(held)), edit).map((x) => x.op), ["shipment.restore", "shipment.update"]);
+  assert.deepEqual(packagePlan(pending, [], packageOf(pending)), []);
+  // A value typed differently from the saved one is no change.
+  assert.ok(!packageChanged(shipment({ packages: [{ weight: { value: 10, unit: "ounce" }, dimensions: { length: 8, width: 6, height: 4, unit: "inch" } }] }),
+    { length: "8.0", width: "6", height: "4", dimUnit: "inch", weight: "10", weightUnit: "ounce" }));
 });
 
 test("DHL's 8009 (account not IMP enabled) is explained, an ordinary refusal is not", () => {

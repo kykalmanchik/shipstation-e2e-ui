@@ -14,16 +14,25 @@ const ICON = {
 
 /** A plan as the person sees it before and while it runs: the ShipStation calls in order, one confirmation for all of
  * them, each step's state as it goes. It stops at the first step that fails or is refused. An `overridable` block can be
- * sent anyway, as an action of All actions can, to see what ShipStation answers. */
+ * sent anyway, as an action of All actions can, to see what ShipStation answers.
+ *
+ * The confirmation and the states belong to the plan they were given for: an edit that changes the plan withdraws the
+ * confirmation, and a plan read again after a run shows no states of the run before. While it runs it shows the steps it
+ * runs, whatever is read meanwhile. */
 export function PlanRunner({ title, steps, kind, shipmentId, order, operations, production, blocked = null, overridable = false, runLabel = "Run", empty = "Nothing to run.", onReport }: {
   title: string; steps: Step[]; kind: "write" | "spend" | "danger"; shipmentId: string; order: string; operations: Operation[];
   production: boolean; blocked?: string | null; overridable?: boolean; runLabel?: string; empty?: string; onReport: (report: Report) => void;
 }) {
   const qc = useQueryClient();
-  const [states, setStates] = useState<StepState[] | null>(null);
+  const plan = steps.map((s) => `${s.op} ${s.title} ${JSON.stringify(s.input)}`).join("\n");
+  const [run, setRun] = useState<{ plan: string; steps: Step[]; states: StepState[] } | null>(null);
   const [running, setRunning] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  const [confirmedFor, setConfirmedFor] = useState<string | null>(null);
+  const confirming = confirmedFor === plan;
+  const setConfirming = (on: boolean) => setConfirmedFor(on ? plan : null);
   const [anyway, setAnyway] = useState(false);
+  const shown = running && run ? run.steps : steps;
+  const states = run && (running || run.plan === plan) ? run.states : null;
   const held = Boolean(blocked) && !(overridable && anyway);
   const route = (s: Step) => {
     const o = operations.find((x) => x.id === s.op);
@@ -34,6 +43,7 @@ export function PlanRunner({ title, steps, kind, shipmentId, order, operations, 
     setConfirming(false);
     setRunning(true);
     let latest: StepState[] = steps.map(() => ({ status: "pending" }));
+    const setStates = (states: StepState[]) => setRun({ plan, steps, states });
     setStates(latest);
     const outcome = await executePlan(steps, (op, input) => api.run(op, input), (i, state) => { latest = latest.map((x, j) => (j === i ? state : x)); setStates(latest); }, describeError);
     setRunning(false);
@@ -54,9 +64,9 @@ export function PlanRunner({ title, steps, kind, shipmentId, order, operations, 
 
   return (
     <div className="stack" style={{ gap: 8 }}>
-      {steps.length === 0 ? <p className="muted t-xs">{empty}</p> : (
+      {shown.length === 0 ? <p className="muted t-xs">{empty}</p> : (
         <ol className="plan" aria-label="Steps of the plan, in order — not choices">
-          {steps.map((s, i) => {
+          {shown.map((s, i) => {
             const st = states?.[i]?.status ?? "pending";
             return (
               <li key={`${s.op}-${i}`} className={`plan-${st}`}>
@@ -85,7 +95,7 @@ export function PlanRunner({ title, steps, kind, shipmentId, order, operations, 
           <button type="button" className={`btn ${kind === "danger" ? "btn-destructive-outline" : "btn-primary"}`} disabled={running || steps.length === 0 || held} onClick={() => setConfirming(true)}>
             {running ? <Loader size={14} className="spin" /> : <Play size={14} />} {runLabel}</button>
         )}
-        <span className="t-xs muted">{steps.length} ShipStation call{steps.length === 1 ? "" : "s"}, then 3 to read the shipment again</span>
+        <span className="t-xs muted">{shown.length} ShipStation call{shown.length === 1 ? "" : "s"}, then 3 to read the shipment again</span>
       </div>
     </div>
   );

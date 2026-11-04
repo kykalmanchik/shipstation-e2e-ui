@@ -105,7 +105,8 @@ export function DeskCard({ ctx, move, operations, production }: { ctx: Context; 
                 runLabel="Cancel order" {...common} onReport={finished} />
             </div>
           ) : runnable.needs === "purchase" ? (
-            <BuyLabel ctx={ctx} {...common} prelude={plan("label_purchased", ctx)} onReport={finished} />
+            // A package saved on its own keeps the move chosen: the purchase is the next press, not a second trip through Move to.
+            <BuyLabel ctx={ctx} {...common} prelude={plan("label_purchased", ctx)} onReport={finished} onSaved={setReport} />
           ) : (
             <PlanRunner key={`${runnable.id}-${holdUntil}-${shipInput.tracking}-${shipInput.carrierCode}`} title={`Move to ${runnable.label}`} steps={steps}
               kind={steps.some((x) => x.op === "label.void" || x.op === "shipment.cancel") ? "danger" : "write"} blocked={dateError ?? shipProblem}

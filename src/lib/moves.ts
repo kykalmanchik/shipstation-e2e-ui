@@ -195,14 +195,15 @@ export function rateText(r: Rate): string {
 
 /* ---------- the package: its size and weight ---------- */
 
-/** The first package's size and weight as the form holds them (text, so a half-typed number stays typed). */
+/** The first package's size and weight as the form holds them (text, so a half-typed number stays typed). A size or
+ * weight of zero is no size at all (`noSize`): it reads as an empty field, so the first digit typed is the value. */
 export interface PackageEdit { length: string; width: string; height: string; dimUnit: string; weight: string; weightUnit: string }
 export const DIMENSION_UNITS = ["inch", "centimeter"] as const;
 export const WEIGHT_UNITS = ["ounce", "pound", "gram", "kilogram"] as const;
 
 export function packageOf(s: Shipment): PackageEdit {
   const p = s.packages?.[0];
-  const n = (v: number | undefined) => (v === undefined ? "" : String(v));
+  const n = (v: number | undefined) => (v === undefined || v === 0 ? "" : String(v));
   return {
     length: n(p?.dimensions?.length), width: n(p?.dimensions?.width), height: n(p?.dimensions?.height), dimUnit: p?.dimensions?.unit ?? "inch",
     weight: n(p?.weight?.value), weightUnit: p?.weight?.unit ?? "ounce",
@@ -222,7 +223,12 @@ export function packageError(e: PackageEdit): string | null {
   }
   return null;
 }
-export const packageChanged = (s: Shipment, e: PackageEdit): boolean => JSON.stringify(packageOf(s)) !== JSON.stringify(e);
+/** Whether the form differs from the shipment: by value, so "8.0" typed over a saved 8 is no change. */
+export function packageChanged(s: Shipment, e: PackageEdit): boolean {
+  const o = packageOf(s);
+  const same = (a: string, b: string) => a.trim() === b.trim() || (a.trim() !== "" && b.trim() !== "" && Number(a) === Number(b));
+  return o.dimUnit !== e.dimUnit || o.weightUnit !== e.weightUnit || !(["length", "width", "height", "weight"] as const).every((k) => same(o[k], e[k]));
+}
 
 /** `PUT /v2/shipments/{id}` with the whole shipment and its first package replaced (measured: the update is not partial). */
 export function updatePackageStep(s: Shipment, e: PackageEdit): Step {
@@ -231,6 +237,24 @@ export function updatePackageStep(s: Shipment, e: PackageEdit): Step {
   const body = { ...Object.fromEntries(Object.entries(s).filter(([key]) => !SHIPMENT_READ_ONLY.includes(key))), packages: [edited, ...rest] };
   return { op: "shipment.update", title: `Set the package to ${e.length}×${e.width}×${e.height} ${e.dimUnit}, ${e.weight} ${e.weightUnit}`, input: { params: { shipment_id: s.shipment_id }, query: {}, body } };
 }
+
+/** The label purchase as one plan, under one confirmation: release a hold (`prelude`), save the package when it was edited,
+ * buy. Nothing without a buy step (no rate chosen yet). The PUT replaces the whole shipment, so after a release it carries
+ * no hold date — what the record of a shipment that is not held reads (`hold_until_date: null`). */
+export function purchasePlan(s: Shipment, prelude: Step[], edit: PackageEdit, buy: Step | null): Step[] {
+  return buy ? [...prelude, ...saveStep(s, prelude, edit), buy] : [];
+}
+/** The package saved alone (a hold released first): "a rate I choose" needs it, since rates are quoted for the package
+ * ShipStation holds. Nothing when the form is the shipment's own. */
+export function packagePlan(s: Shipment, prelude: Step[], edit: PackageEdit): Step[] {
+  const save = saveStep(s, prelude, edit);
+  return save.length ? [...prelude, ...save] : [];
+}
+const saveStep = (s: Shipment, prelude: Step[], edit: PackageEdit): Step[] => {
+  if (!packageChanged(s, edit)) return [];
+  const released = prelude.some((x) => x.op === "shipment.restore");
+  return [updatePackageStep(released ? { ...s, hold_until_date: null } : s, edit)];
+};
 
 /** A USPS label from this sandbox has no tracking number, and the sandbox has refused to void one; a void of a
  * usps_ground_advantage label was approved on 2026-10-27. */

@@ -7,7 +7,7 @@ import { orderOf } from "../lib/format.ts";
 import { useCarrierList, useCarriers, type CarrierPackage, type CarrierService } from "../lib/hooks.ts";
 import {
   DHL_IMP_WARNING, DIMENSION_UNITS, LABEL_FORMATS, isDhlExpress, LABEL_LAYOUTS, STAMPS_WARNING, WEIGHT_UNITS, buyFromRateStep, buyOwnStep, buyable, isStamps, noSize, packageChanged, packageError, packageOf,
-  purchasable, rateRequest, rateText, ratesOf, updatePackageStep, type PackageEdit,
+  packagePlan, purchasable, purchasePlan, rateRequest, rateText, ratesOf, type PackageEdit,
   type LabelFile, type Rate, type Step,
 } from "../lib/moves.ts";
 import type { Operation } from "../lib/types.ts";
@@ -15,9 +15,11 @@ import { PlanRunner, type Report } from "./PlanRunner.tsx";
 
 /** The warehouse's label purchase: pick the carrier, its service and package type from the account's own lists, get the
  * rates, choose one and buy — or buy with the carrier and service the shipment already names. `prelude` is whatever must
- * run first (a held shipment is restored before a label can be bought). */
-export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
-  ctx: Context; operations: Operation[]; production: boolean; prelude: Step[]; onReport: (report: Report) => void;
+ * run first (a held shipment is restored before a label can be bought). An edited package is saved by the purchase itself,
+ * one plan and one confirmation; with "a rate I choose" it is saved first (`onSaved`, the move stays chosen), because the
+ * rates are quoted for the package ShipStation holds. */
+export function BuyLabel({ ctx, operations, production, prelude, onReport, onSaved }: {
+  ctx: Context; operations: Operation[]; production: boolean; prelude: Step[]; onReport: (report: Report) => void; onSaved: (report: Report) => void;
 }) {
   const s = ctx.shipment;
   const carriers = useCarriers(true);
@@ -47,11 +49,14 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
   const ownCarrier = carriers.data?.find((c) => c.carrier_id === s.carrier_id);
   const dhl = how === "own" ? isDhlExpress(ownCarrier?.carrier_code ?? s.service_code) : isDhlExpress(chosen?.carrier_code);
   const stamps = how === "own" ? isStamps(ownCarrier?.carrier_code) : isStamps(chosen?.carrier_code);
-  const steps = how === "own" ? [...prelude, buyOwnStep(s.shipment_id, file)] : rateId ? [...prelude, buyFromRateStep(rateId, file)] : [];
   const edit = pkg ?? packageOf(s);
   const setEdit = (patch: Partial<PackageEdit>) => { setPkg({ ...edit, ...patch }); forget(); };
-  const editProblem = packageChanged(s, edit) ? packageError(edit) : null;
-  const save = packageChanged(s, edit) ? [...prelude, updatePackageStep(s, edit)] : [];
+  const changed = packageChanged(s, edit);
+  const editProblem = changed ? packageError(edit) : null;
+  const steps = purchasePlan(s, prelude, edit, how === "own" ? buyOwnStep(s.shipment_id, file) : rateId ? buyFromRateStep(rateId, file) : null);
+  // The edit stays as typed after a save: the record read again agrees with it, and nothing flashes back to the old size.
+  const saveFirst = how === "rate" && changed;
+  const SAVE_FIRST = "Save the package first — the rates are quoted for the package ShipStation holds.";
 
   return (
     <div className="stack" style={{ gap: 10 }}>
@@ -76,6 +81,39 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
             {LABEL_LAYOUTS.map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
         </div>
+      </div>
+
+      <div className="stack" style={{ gap: 8 }}>
+        <div className="semibold t-sm">Package</div>
+        {noSize(s) && <div className="callout tone-yellow accent-left row"><TriangleAlert size={16} /><div>The shipment has no package size (length, width, height): carriers refuse to sell a label without one. Set it below{how === "own" ? " — Buy label saves it on the shipment, then buys." : ", save it, then get the rates."}</div></div>}
+        <div className="grid">
+          {(["length", "width", "height"] as const).map((k) => (
+            <div className="field" key={k}>
+              <label htmlFor={`pkg-${k}`}>{k[0]!.toUpperCase() + k.slice(1)}</label>
+              <input id={`pkg-${k}`} className="input" inputMode="decimal" value={edit[k]} placeholder="0" onChange={(e) => setEdit({ [k]: e.target.value })} autoComplete="off" />
+            </div>
+          ))}
+          <div className="field">
+            <label htmlFor="pkg-dim-unit">Size unit</label>
+            <select id="pkg-dim-unit" className="select" value={edit.dimUnit} onChange={(e) => setEdit({ dimUnit: e.target.value })}>
+              {DIMENSION_UNITS.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="pkg-weight">Weight</label>
+            <input id="pkg-weight" className="input" inputMode="decimal" value={edit.weight} placeholder="0" onChange={(e) => setEdit({ weight: e.target.value })} autoComplete="off" />
+          </div>
+          <div className="field">
+            <label htmlFor="pkg-weight-unit">Weight unit</label>
+            <select id="pkg-weight-unit" className="select" value={edit.weightUnit} onChange={(e) => setEdit({ weightUnit: e.target.value })}>
+              {WEIGHT_UNITS.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+        </div>
+        {saveFirst && (
+          <PlanRunner key={JSON.stringify(edit)} title="Save package" steps={packagePlan(s, prelude, edit)} kind="write" shipmentId={s.shipment_id} order={orderOf(s)} operations={operations} production={production}
+            blocked={editProblem} runLabel="Save package" onReport={onSaved} />
+        )}
       </div>
 
       {how === "rate" && (
@@ -108,9 +146,9 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
             </div>
           </div>
           <div className="row" style={{ flexWrap: "wrap" }}>
-            <button type="button" className="btn btn-outline" disabled={quote.isPending || carrierIds.length === 0} onClick={() => quote.mutate()}>
+            <button type="button" className="btn btn-outline" disabled={quote.isPending || carrierIds.length === 0 || saveFirst} onClick={() => quote.mutate()}>
               {quote.isPending ? <Loader size={14} className="spin" /> : null} Get rates</button>
-            <span className="t-xs muted">1 call</span>
+            <span className="t-xs muted">{saveFirst ? SAVE_FIRST : "1 call"}</span>
           </div>
           {quote.isError && <div className="callout tone-red">{describeError(quote.error)}</div>}
           {rates && (
@@ -130,44 +168,11 @@ export function BuyLabel({ ctx, operations, production, prelude, onReport }: {
         </>
       )}
 
-      <div className="stack" style={{ gap: 8 }}>
-        <div className="semibold t-sm">Package</div>
-        {noSize(s) && <div className="callout tone-yellow accent-left row"><TriangleAlert size={16} /><div>The shipment has no package size (length, width, height): carriers refuse to sell a label without one. Set it below and save.</div></div>}
-        <div className="grid">
-          {(["length", "width", "height"] as const).map((k) => (
-            <div className="field" key={k}>
-              <label htmlFor={`pkg-${k}`}>{k[0]!.toUpperCase() + k.slice(1)}</label>
-              <input id={`pkg-${k}`} className="input" inputMode="decimal" value={edit[k]} onChange={(e) => setEdit({ [k]: e.target.value })} autoComplete="off" />
-            </div>
-          ))}
-          <div className="field">
-            <label htmlFor="pkg-dim-unit">Size unit</label>
-            <select id="pkg-dim-unit" className="select" value={edit.dimUnit} onChange={(e) => setEdit({ dimUnit: e.target.value })}>
-              {DIMENSION_UNITS.map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="pkg-weight">Weight</label>
-            <input id="pkg-weight" className="input" inputMode="decimal" value={edit.weight} onChange={(e) => setEdit({ weight: e.target.value })} autoComplete="off" />
-          </div>
-          <div className="field">
-            <label htmlFor="pkg-weight-unit">Weight unit</label>
-            <select id="pkg-weight-unit" className="select" value={edit.weightUnit} onChange={(e) => setEdit({ weightUnit: e.target.value })}>
-              {WEIGHT_UNITS.map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </div>
-        </div>
-        {save.length > 0 && (
-          <PlanRunner key={JSON.stringify(edit)} title="Save package" steps={save} kind="write" shipmentId={s.shipment_id} order={orderOf(s)} operations={operations} production={production}
-            blocked={editProblem} runLabel="Save package" onReport={(r) => { if (r.ok) setPkg(null); onReport(r); }} />
-        )}
-      </div>
-
       {dhl && <div className="callout tone-yellow accent-left row"><TriangleAlert size={16} /><div>{DHL_IMP_WARNING}</div></div>}
       {stamps && <div className="callout tone-yellow accent-left row"><TriangleAlert size={16} /><div>{STAMPS_WARNING}</div></div>}
 
       <PlanRunner title="Buy label" steps={steps} kind="spend" shipmentId={s.shipment_id} order={orderOf(s)} operations={operations} production={production}
-        blocked={packageChanged(s, edit) ? "Save the package first — the label is bought with the package ShipStation holds." : how === "rate" && !rateId ? "Get the rates and choose one first." : null} runLabel="Buy label" onReport={onReport} />
+        blocked={saveFirst ? SAVE_FIRST : how === "rate" && !rateId ? "Get the rates and choose one first." : editProblem} runLabel="Buy label" onReport={onReport} />
     </div>
   );
 }
