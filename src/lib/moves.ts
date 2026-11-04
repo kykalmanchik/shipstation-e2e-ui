@@ -52,7 +52,7 @@ const HINTS: Record<MoveId, string> = {
   on_hold: "A label cannot be bought on a held shipment until it is restored.",
   label_purchased: "ShipStation sends label_created_v2 about 7 s after the purchase.",
   shipped: "Creates a fulfillment: ShipStation lists it without tracking for a few seconds, then reports the shipment as label_purchased and sends fulfillment_shipped_v2 after about 20 s. Integrations that follow the label ignore a fulfillment beside a bought label, so a live label is voided first.",
-  cancelled: "Voids any live label, then cancels. A cancelled shipment stays cancelled.",
+  cancelled: "Two separate calls, each its own button: Void label (the shipment goes back to pending), then Cancel order. A cancelled shipment stays cancelled.",
   delivered: DELIVERED_WHY, problem: PROBLEM_WHY,
 };
 
@@ -73,7 +73,7 @@ export function moves(ctx: Context): Move[] {
     return null;
   };
   const needs = (id: MoveId): Move["needs"] => (id === "on_hold" ? "date" : id === "label_purchased" ? "purchase" : id === "shipped" ? "shipment" : null);
-  // The moves whose plan voids the live labels: Awaiting shipment from a label, Cancelled, and Shipped (a fulfillment is read only without one).
+  // The moves that void the live labels: Awaiting shipment from a label, Cancelled (its Void label button), and Shipped (a fulfillment is read only without one).
   const risk = labelsLive && voidRisk(ctx);
   const voids = (id: MoveId) => id === "cancelled" || id === "shipped" || (id === "pending" && labelsLive);
   return (["pending", "on_hold", "label_purchased", "shipped", "cancelled", "delivered", "problem"] as MoveId[]).map((id) => {
@@ -90,6 +90,17 @@ function voidRisk(ctx: Context): string | null {
 export interface Step { op: string; title: string; input: OpInput }
 
 const restoreStep = (shipmentId: string): Step => ({ op: "shipment.restore", title: "Release the hold", input: { params: { shipment_id: shipmentId }, query: {} } });
+
+/** A void of each live label. */
+export const voidSteps = (ctx: Context): Step[] => ctx.labels.filter((l) => l.status === "completed" && !l.voided)
+  .map((l) => ({ op: "label.void", title: `Void label ${l.label_id}`, input: { params: { label_id: l.label_id }, query: {} } }));
+
+/** Cancelled is two operations, each its own button: Void label, then Cancel order. ShipStation's docs ask for the void first
+ * (operations.mjs: "Any label on it must be voided first"; not measured), so the cancel waits for it — or is sent anyway, for a
+ * label the sandbox will not void. Read from the labels, not the status: a shipment marked shipped by a fulfillment reads
+ * label_purchased with no label to void. */
+export const cancelBlocked = (ctx: Context): string | null =>
+  voidSteps(ctx).length ? "Void the label first — ShipStation's docs say a shipment with a label out cannot be cancelled" : null;
 
 /** What the Shipped move asks for: the fulfillment's tracking number and carrier. */
 export interface ShipInput { tracking?: string; carrierCode?: string }
@@ -111,12 +122,12 @@ export function shipError(input: ShipInput): string | null {
   return input.carrierCode ? null : "Choose the carrier";
 }
 
-/** The calls that take the shipment to `id`; a move that needs more (a date, a purchase) is completed by the caller. */
+/** The calls that take the shipment to `id`; a move that needs more (a date, a purchase) is completed by the caller.
+ * Cancelled is the cancel alone: its void is a button of its own (`voidSteps`), run before it. */
 export function plan(id: Stage, ctx: Context, opts: { holdUntil?: string } & ShipInput = {}): Step[] {
   const sid = ctx.shipment.shipment_id;
   const { liveLabel, held } = standing(ctx);
-  const voids: Step[] = ctx.labels.filter((l) => l.status === "completed" && !l.voided)
-    .map((l) => ({ op: "label.void", title: `Void label ${l.label_id}`, input: { params: { label_id: l.label_id }, query: {} } }));
+  const voids = voidSteps(ctx);
   switch (id) {
     case "pending": return liveLabel ? voids : held ? [restoreStep(sid)] : [];
     case "on_hold": return opts.holdUntil
@@ -130,7 +141,7 @@ export function plan(id: Stage, ctx: Context, opts: { holdUntil?: string } & Shi
       { op: "fulfillment.create", title: `Mark shipped (${opts.carrierCode}, ${opts.tracking!.trim()})`,
         input: { params: {}, query: {}, body: { fulfillments: [{ shipment_id: sid, tracking_number: opts.tracking!.trim(), carrier_code: opts.carrierCode, notify_customer: false, notify_order_source: false }] } } },
     ];
-    case "cancelled": return [...voids, { op: "shipment.cancel", title: "Cancel the shipment", input: { params: { shipment_id: sid }, query: {} } }];
+    case "cancelled": return [{ op: "shipment.cancel", title: "Cancel the shipment", input: { params: { shipment_id: sid }, query: {} } }];
   }
 }
 

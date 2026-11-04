@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { draft, unavailable, type Context } from "../src/lib/actions.ts";
 import type { Label, Operation, Shipment } from "../src/lib/types.ts";
-import { DHL_IMP_WARNING, carrierSetupHint, isDhlExpress, VOID_RISK, noSize, packageChanged, packageError, packageOf, updatePackageStep, defaultCarrierCode, defaultTracking, executePlan, holdDateError, moves, plan, rateRequest, refusalOf, shipError, stageOf, tomorrow, buyable, type Step } from "../src/lib/moves.ts";
+import { DHL_IMP_WARNING, cancelBlocked, carrierSetupHint, isDhlExpress, VOID_RISK, noSize, packageChanged, packageError, packageOf, updatePackageStep, defaultCarrierCode, defaultTracking, executePlan, holdDateError, moves, plan, rateRequest, refusalOf, shipError, stageOf, tomorrow, buyable, voidSteps, type Step } from "../src/lib/moves.ts";
 import { parseView, serializeView } from "../src/lib/url-state.ts";
 // @ts-expect-error — a plain .mjs module without types
 import { OPERATIONS_BY_ID } from "../server/operations.mjs";
@@ -98,7 +98,7 @@ test("a read-only account can move nowhere", () => {
   }
 });
 
-test("plans: release, void then cancel, hold with its date, restore before a purchase", () => {
+test("plans: release, void, cancel, hold with its date, restore before a purchase", () => {
   const ops = (steps: Step[]) => steps.map((s) => s.op);
   const held = ctx({ shipment_status: "on_hold", hold_until_date: "2026-10-30" });
   assert.deepEqual(ops(plan("pending", held)), ["shipment.restore"]);
@@ -108,16 +108,31 @@ test("plans: release, void then cancel, hold with its date, restore before a pur
   const labelled = ctx({ shipment_status: "label_purchased" }, [label({ label_id: "se-9" }), label({ label_id: "se-8", voided: true, status: "voided" })]);
   assert.deepEqual(ops(plan("pending", labelled)), ["label.void"]);
   assert.deepEqual(plan("pending", labelled)[0]!.input.params, { label_id: "se-9" });
-  assert.deepEqual(ops(plan("cancelled", labelled)), ["label.void", "shipment.cancel"]);
+  assert.deepEqual(ops(plan("cancelled", labelled)), ["shipment.cancel"]); // the void is its own button
   assert.deepEqual(ops(plan("cancelled", ctx())), ["shipment.cancel"]);
 
   assert.deepEqual(plan("on_hold", ctx(), { holdUntil: "2026-10-30" })[0]!.input, { params: { shipment_id: "se-1" }, query: {}, body: { hold_until_date: "2026-10-30" } });
   assert.deepEqual(plan("on_hold", ctx()), []);
 });
 
+test("Cancelled is two buttons: Void label voids each live label, Cancel order waits until none is live", () => {
+  const ops = (steps: Step[]) => steps.map((s) => s.op);
+  const labelled = ctx({ shipment_status: "label_purchased" }, [label({ label_id: "se-9" }), label({ label_id: "se-8", voided: true, status: "voided" })]);
+  assert.deepEqual(ops(voidSteps(labelled)), ["label.void"]);
+  assert.deepEqual(voidSteps(labelled)[0]!.input.params, { label_id: "se-9" });
+  assert.match(cancelBlocked(labelled) ?? "", /Void the label first/);
+  // once voided, the record reads the shipment back as pending: the cancel can run
+  const voided = ctx({ shipment_status: "pending" }, [label({ label_id: "se-9", voided: true, status: "voided" })]);
+  assert.deepEqual(voidSteps(voided), []);
+  assert.equal(cancelBlocked(voided), null);
+  // a shipment marked shipped by a fulfillment reads label_purchased but has no label to void
+  assert.deepEqual(voidSteps(fulfilled()), []);
+  assert.equal(cancelBlocked(fulfilled()), null);
+});
+
 test("every step of a plan is an operation of the catalogue, with the parameters it names", () => {
   const labelled = ctx({ shipment_status: "label_purchased" }, [label()]);
-  for (const s of [...plan("cancelled", labelled), ...plan("on_hold", ctx(), { holdUntil: "2026-10-30" }), ...plan("pending", ctx({ shipment_status: "on_hold" }))]) {
+  for (const s of [...voidSteps(labelled), ...plan("cancelled", labelled), ...plan("on_hold", ctx(), { holdUntil: "2026-10-30" }), ...plan("pending", ctx({ shipment_status: "on_hold" }))]) {
     const o = op(s.op);
     assert.ok(o, s.op);
     assert.deepEqual(Object.keys(s.input.params).sort(), Object.keys(o.params ?? {}).sort(), s.op);

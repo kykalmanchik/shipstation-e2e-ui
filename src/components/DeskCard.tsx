@@ -3,7 +3,7 @@ import { Check, TriangleAlert, X } from "lucide-react";
 import { liveFulfillment, type Context } from "../lib/actions.ts";
 import { orderOf } from "../lib/format.ts";
 import {
-  FULFILLMENT_CARRIERS, STAGE_LABEL, defaultCarrierCode, defaultTracking, holdDateError, moves, parseMove, plan, shipError, stageOf, tomorrow, type Stage,
+  FULFILLMENT_CARRIERS, STAGE_LABEL, cancelBlocked, defaultCarrierCode, defaultTracking, holdDateError, moves, parseMove, plan, shipError, stageOf, tomorrow, voidSteps, type Stage,
 } from "../lib/moves.ts";
 import type { Operation } from "../lib/types.ts";
 import { navigate } from "../lib/url-state.ts";
@@ -35,6 +35,7 @@ export function DeskCard({ ctx, move, operations, production }: { ctx: Context; 
   const settling = (ctx.fulfillments ?? []).some((f) => liveFulfillment(f) && !f.tracking_number);
   const common = { shipmentId: s.shipment_id, order: orderOf(s), operations, production };
   const steps = runnable && runnable.needs !== "purchase" ? plan(runnable.id as Stage, ctx, { holdUntil, ...shipInput }) : [];
+  const voids = voidSteps(ctx);
 
   const choose = (value: string) => { setReport(null); navigate({ move: value || null }, { replace: true }); };
   const finished = (r: Report) => { setReport(r); if (r.ok) navigate({ move: null }, { replace: true }); };
@@ -94,7 +95,16 @@ export function DeskCard({ ctx, move, operations, production }: { ctx: Context; 
               {shipProblem && <span className="t-xs" style={{ color: "var(--destructive)" }}>{shipProblem}</span>}
             </div>
           )}
-          {runnable.needs === "purchase" ? (
+          {runnable.id === "cancelled" ? (
+            // Two operations, two buttons: the void keeps the move chosen, so Cancel order is there once the record is read again.
+            <div className="stack" style={{ gap: 14 }}>
+              <PlanRunner key={`void-${voids.map((x) => x.input.params.label_id).join()}`} title="Void label" steps={voids} kind="danger"
+                runLabel="Void label" empty="No live label — nothing to void." {...common} onReport={setReport} />
+              {/* A label the sandbox will not void (USPS with no tracking number) would leave the cancel shut for good: it can be sent anyway. */}
+              <PlanRunner key="cancel" title="Cancel order" steps={steps} kind="danger" blocked={cancelBlocked(ctx)} overridable
+                runLabel="Cancel order" {...common} onReport={finished} />
+            </div>
+          ) : runnable.needs === "purchase" ? (
             <BuyLabel ctx={ctx} {...common} prelude={plan("label_purchased", ctx)} onReport={finished} />
           ) : (
             <PlanRunner key={`${runnable.id}-${holdUntil}-${shipInput.tracking}-${shipInput.carrierCode}`} title={`Move to ${runnable.label}`} steps={steps}

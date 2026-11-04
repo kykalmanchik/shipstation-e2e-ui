@@ -71,7 +71,7 @@ is given as the production one.
 |---|---|
 | `npm run dev` | Vite + the API in one process on :5190, hot reload, restarts itself on `.env` changes |
 | `npm run build` then `npm start` | the built app served by `server/serve.mjs` (no Vite), same port |
-| `npm test` | 30 tests: the account loading, the rate limiter, retries, the operation allowlist, the page's rules, the desk's moves and plans — no network, no key needed |
+| `npm test` | 33 tests: the account loading, the rate limiter, retries, the operation allowlist, the page's rules, the desk's moves and plans — no network, no key needed |
 | `npm run typecheck` | TypeScript, no emit |
 
 ## Using it
@@ -102,10 +102,10 @@ from the table: it opens the shipment with that move chosen (`&move=` in the add
 | On hold | Hold until a date (a day after today, UTC) | a label out ends it: move to Awaiting shipment first |
 | Label purchased | Release the hold if it is held, then the **Buy label** wizard | see below |
 | Shipped | Release the hold or void the live label first, then **Mark shipped without a label**: a fulfillment with the tracking number and carrier you give (the label's own are the start) | a fulfillment beside a bought label is ambiguous (integrations that follow the label ignore it), which is why a label goes first. The shipment then reads **Shipped (a fulfillment, no label)**; ShipStation calls it `label_purchased` and sends `fulfillment_shipped_v2` after about 20 s. No call here undoes a fulfillment: only Cancelled is left |
-| Cancelled | Void each live label, then Cancel | final in ShipStation: every other stage is then greyed |
+| Cancelled | two buttons, each its own call and confirmation: **Void label** (each live label), then **Cancel order** | Cancel order waits while a label is live (ShipStation's docs: void first), unless you tick **Send it anyway** — for a label the sandbox will not void (USPS with no tracking number), to see what ShipStation answers; the void keeps the move chosen, so Cancel order is there once the shipment is read again. Cancelled is final in ShipStation: every other stage is then greyed |
 | Delivered · Carrier problem | nothing | greyed with the reason: both come from the carrier's tracking, a fulfillment has no delivered field, and the sandbox gives no USPS tracking (`tracking_not_supported`) and only `UN` for UPS |
 
-Each move shows its **plan** first (the calls, in order, with the real ids), one confirmation covers all of it, each step shows
+Each move shows its **plan** first (the calls, in order, with the real ids), one confirmation covers all of it (Cancelled is two operations, one confirmation each), each step shows
 done / failed / skipped as it goes, and the plan **stops at the first step that fails**. A change is never resent; the shipment
 is read again afterwards. A line under the move says what ShipStation does with it (the state it ends in, the webhook it sends).
 A read-only production account can move nowhere.
@@ -118,8 +118,8 @@ come from the shipment itself.
 
 **A void the sandbox is likely to refuse is announced before the plan runs.** A USPS (`stamps_com`) label with no tracking number
 (first-class flats, measured 2026-10-28: `validation_failed`, "mail-in refund requests") is refused, while labels with a tracking
-number (UPS, USPS Ground Advantage, Media Mail) voided every time. Awaiting shipment, Shipped and Cancelled show the warning for such
-a label; the plan can still be run and stops at its first step. Pick UPS when a test needs a void, a cancel or tracking.
+number (UPS, USPS Ground Advantage, Media Mail) voided every time. Awaiting shipment, Shipped and Cancelled (its Void label) show the warning
+for such a label; the plan can still be run and stops at its first step. Pick UPS when a test needs a void, a cancel or tracking.
 
 The 52 single operations stay under **All actions** on the shipment, for anything the desk's moves do not name; the section opens by itself
 when the address names one of its actions (`&op=…`). The grey clock beside a step is its state, not a choice: a plan is run whole.
